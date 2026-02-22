@@ -1779,13 +1779,34 @@ class LocalLLM:
             sys.exit(1)
 
     def generate(self, messages: list[dict], max_tokens: int = 1024) -> str:
-        """Generate a response given a conversation history."""
+        """Generate a response given a conversation history.
+
+        Applies prompt repetition (Promptless Reasoning, 2025): the full formatted
+        prompt body is repeated before the generation token.  For causal LMs this
+        lets tokens near the end attend to tokens at the start via the repeated
+        copy, improving instruction-following without increasing generated-token
+        count or latency.  Effect is positive for non-reasoning models and neutral
+        for reasoning models, so it's always safe to apply.
+        """
         from mlx_lm import generate
 
         if hasattr(self.tokenizer, "apply_chat_template"):
-            prompt = self.tokenizer.apply_chat_template(
-                messages, tokenize=False, add_generation_prompt=True
-            )
+            # Build prompt body (no generation prompt) and generation suffix separately
+            # so we can repeat only the body: body + body + gen_suffix.
+            try:
+                prompt_body = self.tokenizer.apply_chat_template(
+                    messages, tokenize=False, add_generation_prompt=False
+                )
+                prompt_with_gen = self.tokenizer.apply_chat_template(
+                    messages, tokenize=False, add_generation_prompt=True
+                )
+                gen_suffix = prompt_with_gen[len(prompt_body):]
+                prompt = prompt_body + prompt_body + gen_suffix
+            except Exception:
+                # Fallback: some tokenizers don't support add_generation_prompt=False
+                prompt = self.tokenizer.apply_chat_template(
+                    messages, tokenize=False, add_generation_prompt=True
+                )
         else:
             parts = []
             for msg in messages:
@@ -1793,7 +1814,8 @@ class LocalLLM:
                 content = msg["content"]
                 parts.append(f"<|{role}|>\n{content}")
             parts.append("<|assistant|>\n")
-            prompt = "\n".join(parts)
+            body = "\n".join(parts[:-1])
+            prompt = body + "\n" + body + "\n" + parts[-1]
 
         response = generate(
             self.model,
