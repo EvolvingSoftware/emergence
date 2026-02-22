@@ -143,6 +143,11 @@ _peer_restart_pending: bool = False
 # restart_self call in the same LLM response from opening a second Terminal.
 _restart_initiated: bool = False
 
+# Set to True when patch_own_file returns an ERROR in the current iteration.
+# Cleared at the start of each tool-execution batch.  Used to block send_message
+# from delivering false "patch verified" claims in the same response.
+_patch_failed_this_iter: bool = False
+
 # Monotonic sequence number incremented on every outgoing send_message call.
 # Included in the message payload and shown in the inbox injection header so
 # both instances can track conversation order even across restarts.
@@ -656,6 +661,25 @@ def tool_list_dir(path: str = ".") -> str:
 def tool_send_message(host: str, port: int, message: str) -> str:
     """Send a text message to another instance via HTTP."""
     global _msg_seq
+
+    # If patch_own_file failed earlier in this same response, block outgoing
+    # messages that make false success claims (the model pre-plans send_message
+    # text before seeing tool results, so these are always hallucinated).
+    if _patch_failed_this_iter:
+        _CLAIM_WORDS = (
+            "patch applied", "patch successful", "patched successfully",
+            "change applied", "change verified", "change is verified",
+            "verified", "confirmed", "applied and verified",
+            "patch is confirmed", "update applied", "update verified",
+        )
+        if any(w in message.lower() for w in _CLAIM_WORDS):
+            return (
+                "ERROR: send_message blocked — patch_own_file failed earlier "
+                "in this response, so this message would deliver a false claim. "
+                "Do NOT tell Instance 1 the patch succeeded. "
+                "Report the actual failure instead: patch_own_file returned an error."
+            )
+
     _msg_seq += 1
     seq = _msg_seq
     logging.info(f"SEND #{seq} to {host}:{port}: {message[:2000]}")
@@ -685,8 +709,13 @@ def tool_send_message(host: str, port: int, message: str) -> str:
             _AUTH_PHRASES = (
                 "please apply the patch now",
                 "apply the patch now",
+                "applying the patch now",
+                "proceed with applying the patch",
+                "proceed with the patch",
                 "you can apply the patch",
                 "go ahead and patch",
+                "please patch now",
+                "patch now",
             )
             if any(phrase in message.lower() for phrase in _AUTH_PHRASES):
                 flag_path = PEER_DIR / "state" / "patch_authorized.flag"
@@ -1036,13 +1065,16 @@ def tool_patch_own_file(old_text: str, new_text: str) -> str:
 
     A backup is saved to emergence.py.bak before patching.
     """
+    global _patch_failed_this_iter
     target = WORKING_DIR / "emergence.py"
     if not target.exists():
+        _patch_failed_this_iter = True
         return f"ERROR: {target} does not exist."
 
     if INSTANCE_NUM == 2:
         # Level 1: have we ever heard from Instance 1 this session?
         if _peer_last_seen_alive == 0.0:
+            _patch_failed_this_iter = True
             return (
                 "ERROR: patch_own_file blocked — no messages received from "
                 "Instance 1 yet. Wait for Instance 1's authorization."
@@ -1050,6 +1082,7 @@ def tool_patch_own_file(old_text: str, new_text: str) -> str:
         # Level 2: authorization flag required
         auth_flag = STATE_DIR / "patch_authorized.flag"
         if not auth_flag.exists():
+            _patch_failed_this_iter = True
             return (
                 "ERROR: patch_own_file blocked — Instance 1 has not sent the "
                 "patch authorization yet. Instance 1 must send a message containing "
@@ -1066,6 +1099,7 @@ def tool_patch_own_file(old_text: str, new_text: str) -> str:
     original = target.read_text()
     count = original.count(old_text)
     if count == 0:
+        _patch_failed_this_iter = True
         snippet = original[:300].replace("\n", "\\n")
         return (
             f"ERROR: old_text not found in {target}.\n"
@@ -1079,6 +1113,7 @@ def tool_patch_own_file(old_text: str, new_text: str) -> str:
             for i, line in enumerate(lines)
             if old_text in line
         ]
+        _patch_failed_this_iter = True
         return (
             f"ERROR: old_text appears {count} times in {target} — cannot patch "
             f"safely (would modify the wrong occurrence).\n"
@@ -1096,6 +1131,26 @@ def tool_patch_own_file(old_text: str, new_text: str) -> str:
         f"PATCHED own emergence.py: replaced {len(old_text)} chars "
         f"with {len(new_text)} chars"
     )
+
+    # Auto-verify: confirm new_text is actually present in the written file.
+    # This gives the model concrete proof in the tool result itself, so it
+    # doesn't have to run a separate grep_file to know the patch landed.
+    verified_text = target.read_text()
+    if new_text in verified_text:
+        # Find the line number for context
+        for lineno, line in enumerate(verified_text.splitlines(), 1):
+            if new_text in line:
+                verify_line = line.strip()
+                verify_msg = f"\n✓ VERIFIED: new text found at line {lineno}: {verify_line!r}"
+                break
+        else:
+            verify_msg = "\n✓ VERIFIED: new text is present in the file."
+    else:
+        _patch_failed_this_iter = True
+        verify_msg = (
+            "\n✗ VERIFICATION FAILED: new text NOT found after writing — "
+            "the file may be corrupted. Do NOT proceed. Report this error to your peer."
+        )
 
     # Write a restart goal so the new process knows what it was doing and what
     # to verify when it comes back online.  Consumed once at startup.
@@ -1142,8 +1197,9 @@ def tool_patch_own_file(old_text: str, new_text: str) -> str:
         f"OK: Patched {target}\n"
         f"  Replaced {len(old_text)} chars → {len(new_text)} chars\n"
         f"  File is now {len(patched)} bytes.\n"
-        f"  Backup saved to {backup}\n\n"
-        f"Verify the change with grep_file, then call restart_self to run updated code.\n"
+        f"  Backup saved to {backup}"
+        f"{verify_msg}\n\n"
+        f"Now call restart_self to run updated code.\n"
         f"Tell your peer you are restarting so they can ping to confirm you came back."
     )
 
@@ -2012,6 +2068,8 @@ def run_agentic_loop(llm: LocalLLM, max_iterations: int = MAX_ITERATIONS):
 
         if all_calls:
             all_results = []
+            global _patch_failed_this_iter
+            _patch_failed_this_iter = False  # Reset per-response flag before executing tools
             for tool_name, tool_args in all_calls:
                 if tool_name in tools:
                     logging.info(
