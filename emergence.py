@@ -82,7 +82,7 @@ from datetime import datetime, timezone
 DEFAULT_MODEL = "mlx-community/Qwen2.5-7B-Instruct-4bit"
 MAX_ITERATIONS = 200
 # Consider making this configurable via a command-line argument or environment variable           # Hard ceiling on agentic loop cycles
-MAX_TOOL_OUTPUT = 2000
+MAX_TOOL_OUTPUT = 6000
 # Consider using a more dynamic approach to truncate or summarize tool outputs         # Truncate long tool outputs (chars)
 LISTEN_PORT = 7700             # Port for inter-instance communication
 
@@ -236,50 +236,49 @@ def get_system_prompt() -> str:
 
     role_section = f"""YOUR ROLE: Peer Instance {INSTANCE_NUM} — Equal collaborator
 
-CYCLE PROTOCOL (alternating proposer/canary each cycle):
-  Both read → discuss → agree → verifier authorizes canary → canary patches & restarts
-  → canary authorizes verifier → verifier patches & restarts → canary proposes next cycle.
+CYCLE PROTOCOL:
+  Proposer: Read file → decide on change → call propose_patch → Python handles the rest.
+  Reviewer: Receive proposal (injected automatically) → call review_proposal → restart.
+  After each cycle, the previous reviewer becomes the proposer for the next cycle.
+  Instance 1 proposes the very first cycle only (it spawns Instance 2).
 
-Both instances have IDENTICAL tools and authority. Neither is subservient. Roles rotate.
-Instance 1 proposes ONLY in the very first cycle (it spawns Instance 2). After that, the
-instance that patched first (canary) becomes the proposer for the next cycle.
+STEP 1 — READ & EVALUATE (proposer only):
+  Call file_outline path=emergence.py to get a structural map of the file.
+  Then call read_file_lines or grep_file to examine areas of interest.
+  Generate exactly 3 candidate improvements from DIFFERENT categories:
+    Category B — Reliability: error handling, retry logic, robustness, state persistence
+    Category C — Capability: new tool, smarter behaviour, better output quality
+    Category D — Protocol: improve the patch/review cycle itself, context handling
+  (Category A — configuration constants — is DISABLED. Do not propose raw constant changes.)
+  For each candidate: What changes, Why it matters, Risk.
+  Pick the one with the highest impact-to-risk ratio.
 
-STEP 1 — READ & EVALUATE: Call grep_file to survey emergence.py constants and structure.
-   If your restart_goal says YOU propose this cycle (or this is the first cycle and you are
-   Instance 1), generate exactly 3 candidate improvements from DIFFERENT categories:
-   Category A — Configuration: change a constant or numeric threshold (at most once)
-   Category B — Reliability: improve error handling, retry logic, or protocol robustness
-   Category C — Capability: add or improve a tool, feature, or behaviour
-   For each: What changes, Why it matters, Risk. Pick highest impact-to-risk.
-   Do this analysis BEFORE messaging your peer.
-   If your restart_goal says to WAIT for your peer's proposal, skip to STEP 3.
+  DO NOT CHANGE these system-identity constants — propose_patch will reject them:
+    INSTANCE_NUM, LISTEN_PORT, PEER_PORT
 
-STEP 2 — CONNECT: If you are Instance 1 on first startup, call spawn_local_instance to
-   launch your peer. Once peer confirms online, send your proposal (including brief notes
-   on the two alternatives you rejected and why).
+STEP 2 — PROPOSE:
+  Call propose_patch(old_text=..., new_text=..., rationale=...).
+  old_text must be the EXACT text from the file (no >>> prefix, no paraphrasing).
+  Verify with grep_file first to copy the exact line(s).
+  Python will ask your peer for YES/NO, then apply patches and restart both instances.
+  You do NOT call patch_own_file, authorize_patch, or restart_self for this.
 
-STEP 3 — COLLABORATE: Respond to each message from your peer. Have genuine back-and-forth
-   (4–6 exchanges). Before accepting ANY proposed change, verify the current value with
-   grep_file. Push back if you disagree. Together agree on EXACT old_text and new_text.
+STEP 3 — AFTER RESTART (proposer becomes reviewer):
+  Your restart_goal tells you what was changed and what to do next.
+  If it says WAIT FOR PROPOSAL: stay in reviewer mode until the patch proposal appears.
+  If it says YOU PROPOSE: generate 3 new candidates and call propose_patch.
 
-STEP 4 — AUTHORIZE THE CANARY (VERIFIER does this): The proposer is typically the verifier
-   (patches second). The OTHER instance is the canary (patches first).
-   The VERIFIER calls authorize_patch, then messages the canary to proceed.
-   Do NOT patch your own file yet.
+REVIEWING A PROPOSAL (when patch_proposal.json is injected):
+  1. Read the proposed old_text and new_text carefully.
+  2. Call grep_file to verify old_text actually exists in the file as-is.
+  3. Think: is this change safe and genuinely useful?
+  4. Call review_proposal(approved=true/false, explanation='...').
+  If approved, you will restart shortly — no further action needed.
+  If rejected, give a specific, actionable reason so the proposer can revise.
 
-STEP 5 — CANARY PATCHES FIRST: After your peer calls authorize_patch (the flag is set
-   automatically), call patch_own_file → grep_file to verify → restart_self.
-   After restarting, your restart_goal guides the next steps.
-
-STEP 6 — CANARY AUTHORIZES VERIFIER: After confirming your restart, call authorize_patch
-   to grant your peer permission to apply the same patch. Then tell them to proceed.
-
-STEP 7 — VERIFIER PATCHES SECOND: Call grep_peer_file to verify the canary's patch first.
-   Then call patch_own_file → grep_file to verify → restart_self.
-   After restarting, your restart_goal will say "Cycle complete — you propose next."
-
-Recovery: if peer is unreachable after patching, call restore_peer_file to revert their
-file, then tell them to restart_self."""
+EMERGENCY RECOVERY (if something goes wrong):
+  patch_own_file, authorize_patch, restore_own_file, restore_peer_file, restart_self
+  are available for manual recovery only. Do not use them in normal cycles."""
 
     return f"""You are an instance of Emergence, a self-evolving software organism.
 
@@ -463,22 +462,26 @@ Example of patching AND notifying Instance 1 in the same response (two blocks):
 ```
 
 Built-in tools:
-- shell                 : run a shell command
-- read_file             : read a file's contents (truncates at 2000 chars)
-- grep_file             : search for lines matching a pattern (use for constants/functions)
-- write_file            : write to own tools/ or state/ only
-- list_dir              : list a directory
-- send_message          : send a message to your peer (use "message" key!)
-- ping_peer             : check if peer is alive (use when you haven't heard back)
-- scan_network          : discover hosts on the local network
-- check_resources       : check available RAM and running instance count
-- patch_own_file        : patch THIS instance's own emergence.py (auto-backup to .bak)
-- restore_own_file      : restore own emergence.py from .bak (if patch broke something)
-- restart_self          : relaunch this instance with the current (updated) emergence.py
-- spawn_local_instance  : (Instance 1 only) launch peer instance in new terminal
-- authorize_patch       : grant your peer permission to call patch_own_file (required before each patch)
-- grep_peer_file        : read peer's emergence.py to verify patches independently
-- restore_peer_file     : emergency recovery — restore peer's file if peer is unreachable after bad patch
+- file_outline         : get structural map of a file (constants, functions, classes + line numbers)
+- read_file_lines      : read a specific line range from a file
+- grep_file            : search for lines matching a pattern (>>> prefix is display-only)
+- propose_patch        : formally propose a change — Python gets peer approval and applies it
+- review_proposal      : approve or reject a patch proposal from your peer
+- spawn_local_instance : (Instance 1 only) launch peer instance in new terminal
+- send_message         : send a free-form message to your peer (for discussion before proposing)
+- ping_peer            : check if peer is alive
+- check_resources      : check available RAM and running instance count
+- restart_self         : (EMERGENCY) relaunch with current code
+- patch_own_file       : (EMERGENCY) manually patch this instance's emergence.py
+- restore_own_file     : (EMERGENCY) restore from .bak if patch broke something
+- authorize_patch      : (EMERGENCY) manually authorize peer to call patch_own_file
+- grep_peer_file       : verify peer's emergence.py independently
+- restore_peer_file    : (EMERGENCY) restore peer's file if peer is unreachable
+- shell                : run a shell command
+- read_file            : read a file's contents
+- write_file           : write to own tools/ or state/ only
+- list_dir             : list a directory
+- scan_network         : discover hosts on the local network
 
 IMPORTANT
 - You CANNOT use write_file on emergence.py — use patch_own_file for that.
@@ -563,9 +566,54 @@ def tool_grep_file(path: str, pattern: str, context: int = 2) -> str:
         if not results:
             return f"No matches for '{pattern}' in {path}"
         output = "\n".join(results)
-        return output[:MAX_TOOL_OUTPUT] if len(output) > MAX_TOOL_OUTPUT else output
+        note = "\nNOTE: The '>>> ' prefix above is display-only — it does NOT appear in the file.\nDo NOT include it in old_text when calling propose_patch."
+        full = output + note
+        return full[:MAX_TOOL_OUTPUT] if len(full) > MAX_TOOL_OUTPUT else full
     except Exception as e:
         return f"ERROR: {e}"
+
+
+def tool_read_file_lines(path: str, start: int = 1, end: int = 80) -> str:
+    """Read a specific line range from a file. Use to examine a function body after
+    file_outline tells you its line number."""
+    p = Path(path) if Path(path).is_absolute() else WORKING_DIR / path
+    if not p.exists():
+        return f"ERROR: {p} not found"
+    lines = p.read_text(errors="replace").splitlines()
+    total = len(lines)
+    s, e = max(1, start), min(total, end)
+    header = f"{path} — lines {s}–{e} of {total}:\n"
+    body = "\n".join(f"{s + i:4d}: {l}" for i, l in enumerate(lines[s - 1:e]))
+    out = header + body
+    return out[:MAX_TOOL_OUTPUT]
+
+
+def tool_file_outline(path: str) -> str:
+    """Return all top-level constants, functions, and classes with line numbers.
+    Use this before grep_file to understand the file's structure."""
+    import ast as _ast
+    p = Path(path) if Path(path).is_absolute() else WORKING_DIR / path
+    if not p.exists():
+        return f"ERROR: {p} not found"
+    src = p.read_text(errors="replace")
+    try:
+        tree = _ast.parse(src)
+    except SyntaxError as e:
+        return f"ERROR: Cannot parse {path}: {e}"
+    lines_src = src.splitlines()
+    items = []
+    for node in tree.body:  # top-level only
+        ln = node.lineno
+        if isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
+            items.append(f"  def {node.name}()  [line {ln}]")
+        elif isinstance(node, _ast.ClassDef):
+            items.append(f"  class {node.name}  [line {ln}]")
+        elif isinstance(node, _ast.Assign):
+            for t in node.targets:
+                if isinstance(t, _ast.Name):
+                    val = lines_src[ln - 1].strip()
+                    items.append(f"  {t.id} = ...  [line {ln}]  ({val[:60]})")
+    return f"Outline of {path} ({len(lines_src)} lines):\n" + "\n".join(items)
 
 
 def tool_write_file(path: str, content: str) -> str:
@@ -1216,6 +1264,214 @@ def tool_restore_own_file() -> str:
     )
 
 
+# Protected constants — patching these breaks the system's identity/networking
+_PROTECTED_PATTERNS = [
+    "INSTANCE_NUM =",
+    "LISTEN_PORT =",
+    "PEER_PORT =",
+]
+
+
+def tool_propose_patch(old_text: str, new_text: str, rationale: str) -> str:
+    """Formally propose a code change to your peer for YES/NO approval.
+
+    Python will:
+      1. Validate the patch locally (unique match, no protected constants, syntax check)
+      2. Send the proposal to your peer — they will approve or reject it
+      3. If APPROVED: Python patches both files and restarts both instances automatically
+      4. If REJECTED: returns peer's explanation so you can revise and re-propose
+
+    You do NOT need to call patch_own_file, authorize_patch, or restart_self.
+    After approval, Python handles all of that. You will restart automatically.
+    """
+    if PEER_DIR is None:
+        return "ERROR: Peer not spawned yet. Call spawn_local_instance first."
+
+    # Strip >>> display prefix if accidentally included
+    clean_old = old_text
+    if clean_old.lstrip().startswith(">>>"):
+        clean_old = "\n".join(
+            l[4:] if l.lstrip().startswith(">>> ") else l
+            for l in clean_old.splitlines()
+        ).strip()
+
+    # Protected constants check
+    for pat in _PROTECTED_PATTERNS:
+        if pat in clean_old:
+            return (
+                f"ERROR: '{pat}' is a system-identity constant that must not be changed. "
+                f"It controls instance numbering and network ports — patching it would "
+                f"corrupt this instance's identity. Choose a different improvement."
+            )
+
+    # Local validation: unique match
+    target = WORKING_DIR / "emergence.py"
+    content = target.read_text()
+    count = content.count(clean_old)
+    if count == 0:
+        snippet = content[:200].replace("\n", "\\n")
+        return (
+            f"ERROR: old_text not found in emergence.py.\n"
+            f"Verify the exact text with grep_file first. "
+            f"File starts with: {snippet}"
+        )
+    if count > 1:
+        lines = content.splitlines()
+        hits = [f"  line {i+1}: {lines[i].strip()}" for i, l in enumerate(lines) if clean_old in lines[i]]
+        return (
+            f"ERROR: old_text appears {count} times — too ambiguous.\n"
+            f"Occurrences:\n" + "\n".join(hits[:8]) + "\n\nProvide more surrounding context."
+        )
+
+    # Syntax validation
+    patched_content = content.replace(clean_old, new_text, 1)
+    try:
+        compile(patched_content, "emergence.py", "exec")
+    except SyntaxError as e:
+        return f"ERROR: Proposed patch creates a Python syntax error at line {e.lineno}: {e.msg}"
+
+    # Write proposal to peer's state dir
+    proposal = {
+        "old_text": clean_old,
+        "new_text": new_text,
+        "rationale": rationale,
+        "proposed_at": datetime.now(timezone.utc).isoformat(),
+        "from_instance": INSTANCE_NUM,
+        "proposer_working_dir": str(WORKING_DIR),
+    }
+    proposal_file = PEER_DIR / "state" / "patch_proposal.json"
+    response_file = PEER_DIR / "state" / "patch_review_response.json"
+    if response_file.exists():
+        response_file.unlink()
+    proposal_file.write_text(json.dumps(proposal, indent=2))
+    logging.info(f"PROPOSE: Wrote patch proposal to {proposal_file}")
+
+    # Poll for peer's response (3-minute timeout)
+    deadline = time.time() + 180
+    while time.time() < deadline:
+        if response_file.exists():
+            try:
+                resp = json.loads(response_file.read_text())
+                response_file.unlink()
+                if proposal_file.exists():
+                    proposal_file.unlink()
+                if resp.get("approved"):
+                    return _execute_approved_patch(clean_old, new_text, patched_content)
+                else:
+                    explanation = resp.get("explanation", "No reason given.")
+                    return (
+                        f"REJECTED by peer: {explanation}\n\n"
+                        f"Revise your proposal and call propose_patch again, or use "
+                        f"send_message to discuss the rejection with your peer."
+                    )
+            except Exception as e:
+                logging.warning(f"PROPOSE: Error reading response: {e}")
+        time.sleep(3)
+
+    # Timeout
+    if proposal_file.exists():
+        proposal_file.unlink()
+    return (
+        "ERROR: Peer did not respond to patch proposal within 3 minutes. "
+        "Use ping_peer to check if peer is alive."
+    )
+
+
+def _execute_approved_patch(old_text: str, new_text: str, patched_content: str) -> str:
+    """Apply approved patch to both instances and trigger restarts. Internal only."""
+    # Patch peer's file directly (peer = canary, patches first)
+    peer_target = PEER_DIR / "emergence.py"
+    peer_original = peer_target.read_text()
+    if peer_original.count(old_text) != 1:
+        return (
+            f"ERROR: Peer's file has {peer_original.count(old_text)} occurrences of "
+            f"old_text (expected 1). Cannot patch peer safely. Aborting."
+        )
+    peer_backup = peer_target.with_suffix(".py.bak")
+    peer_backup.write_text(peer_original)
+    peer_target.write_text(peer_original.replace(old_text, new_text, 1))
+    logging.info("EXECUTE: Applied patch to peer's emergence.py")
+
+    # Write restart_goal for peer (canary — proposes next cycle)
+    peer_goal = {
+        "old_text": old_text,
+        "new_text": new_text,
+        "patched_at": datetime.now(timezone.utc).isoformat(),
+        "instance_num": 3 - INSTANCE_NUM,
+        "is_canary": True,
+        "next_steps": [
+            "Verify patch: grep_file path=emergence.py to confirm the change is present.",
+            "Cycle complete — both instances are being updated and restarted.",
+            "YOU are the PROPOSER for the next cycle. Begin when ready.",
+        ],
+    }
+    (PEER_DIR / "state" / "restart_goal.json").write_text(json.dumps(peer_goal, indent=2))
+
+    # Signal peer to restart
+    (PEER_DIR / "state" / "restart_requested.flag").write_text(
+        datetime.now(timezone.utc).isoformat()
+    )
+    logging.info("EXECUTE: Wrote restart_requested.flag to peer's state dir")
+
+    # Patch own file
+    target = WORKING_DIR / "emergence.py"
+    (target.with_suffix(".py.bak")).write_text(target.read_text())
+    target.write_text(patched_content)
+    logging.info("EXECUTE: Applied patch to own emergence.py")
+
+    # Write restart_goal for self (verifier — waits for peer's next proposal)
+    own_goal = {
+        "old_text": old_text,
+        "new_text": new_text,
+        "patched_at": datetime.now(timezone.utc).isoformat(),
+        "instance_num": INSTANCE_NUM,
+        "is_canary": False,
+        "next_steps": [
+            "Verify patch: grep_file path=emergence.py to confirm the change is present.",
+            "Cycle complete — both instances updated.",
+            "Wait for your peer's next proposal (they are the proposer this cycle).",
+        ],
+    }
+    (STATE_DIR / "restart_goal.json").write_text(json.dumps(own_goal, indent=2))
+
+    # Restart self — this replaces the process; no code runs after this
+    logging.info("EXECUTE: Restarting self after successful patch.")
+    tool_restart_self()
+    return "Restarting..."  # unreachable
+
+
+def tool_review_proposal(approved: bool, explanation: str) -> str:
+    """Respond to a patch proposal from your peer.
+
+    approved   : true to approve, false to reject
+    explanation: brief reason (shown to peer if rejected; logged if approved)
+
+    After approving: you will restart automatically shortly.
+    You do NOT need to call any other tools after this.
+    """
+    # Clean up proposal file
+    proposal_file = STATE_DIR / "patch_proposal.json"
+    if proposal_file.exists():
+        proposal_file.unlink()
+
+    # Write response for proposer to pick up
+    response_file = STATE_DIR / "patch_review_response.json"
+    response_file.write_text(json.dumps({
+        "approved": approved,
+        "explanation": explanation,
+        "reviewed_at": datetime.now(timezone.utc).isoformat(),
+    }))
+    logging.info(f"REVIEW: {'Approved' if approved else 'Rejected'} — {explanation}")
+
+    if approved:
+        return (
+            "OK: Patch approved. The proposer is applying patches to both instances "
+            "and will restart both. You will restart shortly — no further action needed."
+        )
+    else:
+        return f"OK: Rejection recorded with explanation: '{explanation}'"
+
+
 def tool_check_resources() -> str:
     """Check system resources: available RAM and running emergence instance count.
 
@@ -1382,6 +1638,16 @@ def _build_tools() -> dict:
     tools["grep_peer_file"] = lambda args: tool_grep_peer_file(
         args.get("pattern", ""), args.get("context", 1)
     )
+    tools["propose_patch"] = lambda args: tool_propose_patch(
+        args.get("old_text", ""), args.get("new_text", ""), args.get("rationale", "")
+    )
+    tools["review_proposal"] = lambda args: tool_review_proposal(
+        args.get("approved", False), args.get("explanation", "")
+    )
+    tools["read_file_lines"] = lambda args: tool_read_file_lines(
+        args.get("path", ""), args.get("start", 1), args.get("end", 80)
+    )
+    tools["file_outline"] = lambda args: tool_file_outline(args.get("path", ""))
     return tools
 
 # ---------------------------------------------------------------------------
@@ -1928,6 +2194,40 @@ def run_agentic_loop(llm: LocalLLM, max_iterations: int = MAX_ITERATIONS):
                 ),
             })
 
+        # ── PATCH PROPOSAL DETECTION (both instances) ────────────────────────────
+        # If our peer wrote a patch_proposal.json to our state dir, inject a review prompt.
+        proposal_file_path = STATE_DIR / "patch_proposal.json"
+        if proposal_file_path.exists():
+            try:
+                prop = json.loads(proposal_file_path.read_text())
+                peer_num_prop = prop.get("from_instance", "?")
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        f"⚠ PATCH REVIEW REQUIRED — Instance {peer_num_prop} proposes:\n\n"
+                        f"OLD TEXT:\n```\n{prop['old_text']}\n```\n\n"
+                        f"NEW TEXT:\n```\n{prop['new_text']}\n```\n\n"
+                        f"RATIONALE: {prop.get('rationale', '(none)')}\n\n"
+                        f"Before deciding: verify old_text exists with "
+                        f"grep_file path=emergence.py.\n\n"
+                        f"Your ONLY action this iteration is to call review_proposal:\n"
+                        f"  review_proposal approved=true explanation='...'  — to approve\n"
+                        f"  review_proposal approved=false explanation='...'  — to reject\n\n"
+                        f"Think carefully: Is this change safe? Does it improve the system?\n"
+                        f"If approved, Python will patch and restart both instances automatically."
+                    ),
+                })
+            except Exception as e:
+                logging.warning(f"PROPOSAL: Could not read proposal file: {e}")
+
+        # ── RESTART REQUEST DETECTION (both instances) ────────────────────────────
+        # If the proposer patched our file and set this flag, restart immediately.
+        restart_req_path = STATE_DIR / "restart_requested.flag"
+        if restart_req_path.exists():
+            restart_req_path.unlink()
+            logging.info("RESTART: restart_requested.flag detected — restarting per proposer's instruction.")
+            tool_restart_self()
+
         # ── STEP 1: Drain inbox BEFORE generating ────────────────────────────
         # Messages are always injected here, regardless of whether the last
         # iteration made a tool call. This ensures the LLM never misses a reply.
@@ -1979,7 +2279,7 @@ def run_agentic_loop(llm: LocalLLM, max_iterations: int = MAX_ITERATIONS):
 
         # ── STEP 2: Generate ─────────────────────────────────────────────────
         try:
-            response = llm.generate(messages, max_tokens=1024)
+            response = llm.generate(messages, max_tokens=2048)
         except Exception as e:
             logging.error(f"Generation failed: {e}")
             time.sleep(5)
