@@ -132,16 +132,16 @@ The LLM discovers the host via `scan_network`, negotiates SSH access, and handle
 
 ## Safety
 
-- **Iteration cap** — the loop stops after 200 cycles by default.
-- **Kill switch** — Ctrl+C stops any instance immediately.
-- **Canary deployment** — Instance 2 always patches first. If it breaks, Instance 1 can roll back via `restore_peer_file` before patching itself.
-- **Auto-backup** — every patch saves `.bak` automatically; `restore_own_file` rolls back instantly.
-- **Write restrictions** — `write_file` is restricted to `tools/` and `state/`; changes to `emergence.py` must go through `patch_own_file`.
-- **Full logging** — every tool call, shell command, and LLM decision is logged.
-- **Chatter detection** — the loop breaks idle back-and-forth between instances that produces no real action.
-- **Hallucination detection** — responses that begin with peer-message markers are discarded and the instance is corrected.
-- **No open weights online** — the model runs locally; there is no external call to make or intercept.
-- **Manual SSH required for cross-machine spread** — replication only works if you've explicitly enabled Remote Login on the target.
+- **Iteration cap** : the loop stops after 200 cycles by default.
+- **Kill switch** : Ctrl+C stops any instance immediately.
+- **Canary deployment** : Instance 2 always patches first. If it breaks, Instance 1 can roll back via `restore_peer_file` before patching itself.
+- **Auto-backup** : every patch saves `.bak` automatically; `restore_own_file` rolls back instantly.
+- **Write restrictions** : `write_file` is restricted to `tools/` and `state/`; changes to `emergence.py` must go through `patch_own_file`.
+- **Full logging** : every tool call, shell command, and LLM decision is logged.
+- **Chatter detection** : the loop breaks idle back-and-forth between instances that produces no real action.
+- **Hallucination detection** : responses that begin with peer-message markers are discarded and the instance is corrected.
+- **No open weights online** : the model runs locally; there is no external call to make or intercept.
+- **Manual SSH required for cross-machine spread** : replication only works if you've explicitly enabled Remote Login on the target.
 
 ## Mapping to the Seven Layers
 
