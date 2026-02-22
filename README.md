@@ -132,7 +132,7 @@ The LLM discovers the host via `scan_network`, negotiates SSH access, and handle
 
 ## Safety
 
-- **Iteration cap** — the loop stops after 2000 cycles by default.
+- **Iteration cap** — the loop stops after 200 cycles by default.
 - **Kill switch** — Ctrl+C stops any instance immediately.
 - **Canary deployment** — Instance 2 always patches first. If it breaks, Instance 1 can roll back via `restore_peer_file` before patching itself.
 - **Auto-backup** — every patch saves `.bak` automatically; `restore_own_file` rolls back instantly.
