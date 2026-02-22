@@ -1,8 +1,8 @@
 # Emergence
 
-**Two local LLM instances that collaborate to modify their own source code, restart with the changes, and repeat — indefinitely.**
+**Two local LLM instances that collaborate to modify their own source code, restart with the changes, and repeat, indefinitely.**
 
-This is a working demonstration of the ideas in [Evolving Software, The Emergence Architecture](https://evolvingsoftware.com): software that exhibits evolutionary behaviour through constraint, replication, variation, feedback, and communication — with no external orchestration and no cloud.
+This is a working demonstration of the ideas in [Evolving Software, The Emergence Architecture](https://evolvingsoftware.com): software that exhibits evolutionary behaviour through constraint, replication, variation, feedback, and communication, with no external orchestration and no cloud.
 
 ## What It Does
 
@@ -75,10 +75,10 @@ state/
 
 Each instance can:
 
-- **`patch_own_file`** — apply a targeted text patch to its own `emergence.py` (auto-backs up to `.bak` first)
-- **`restore_own_file`** — roll back to the backup if a patch breaks something
-- **`restart_self`** — relaunch with the updated code; the patch goal is persisted so the instance picks up where it left off
-- **`write_file`** — create new tool scripts in `tools/` without touching `emergence.py`
+- **`patch_own_file`** : apply a targeted text patch to its own `emergence.py` (auto-backs up to `.bak` first)
+- **`restore_own_file`** : roll back to the backup if a patch breaks something
+- **`restart_self`** : relaunch with the updated code; the patch goal is persisted so the instance picks up where it left off
+- **`write_file`** : create new tool scripts in `tools/` without touching `emergence.py`
 
 Turn-taking is enforced in Python: Instance 2 always patches first (canary); Instance 1 patches second after verification. Never both at once.
 
@@ -100,7 +100,7 @@ Instances communicate via HTTP on `localhost:7700` (Instance 1) and `localhost:7
 
 ### The Living-Off-the-Land Philosophy
 
-The orchestrator is minimal. It gives the LLM the ability to read and patch its own code, run shell commands, and communicate with its peer. Everything else — what to improve, why, how to verify it landed — the LLM reasons through itself.
+The orchestrator is minimal. It gives the LLM the ability to read and patch its own code, run shell commands, and communicate with its peer. Everything else — what to improve, why, how to verify it landed; the LLM reasons through itself.
 
 The `tools/` directory contains starter scripts, but instances can rewrite or extend them. A tool that doesn't work well is like a limb that doesn't flex properly — the organism adapts.
 
@@ -128,7 +128,7 @@ To enable this:
 1. On the target Mac: System Settings → General → Sharing → Remote Login → On
 2. Ensure Python 3.10+ is installed on the target
 
-The LLM discovers the host via `scan_network`, negotiates SSH access, and handles the transfer. You don't script it — it figures it out.
+The LLM discovers the host via `scan_network`, negotiates SSH access, and handles the transfer. You don't script it, it figures it out.
 
 ## Safety
 
@@ -159,7 +159,7 @@ The LLM discovers the host via `scan_network`, negotiates SSH access, and handle
 
 This demo accompanies *Evolving Software, The Emergence Architecture: Why Software Does Not Need Sentience to Surpass Us*, available at [EvolvingSoftware.com](https://evolvingsoftware.com). A PDF copy of the paper is available here: [EvolvingSoftwareTheEmergenceArchitecture.pdf](EvolvingSoftwareTheEmergenceArchitecture.pdf)
 
-The paper presents a seven-layer framework for understanding how software can evolve without consciousness — and argues that the structural conditions for this are already assembling.
+The paper presents a seven-layer framework for understanding how software can evolve without consciousness and argues that the structural conditions for this are already assembling.
 
 ## License
 
