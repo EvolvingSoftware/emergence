@@ -234,95 +234,52 @@ def log_comm(from_num: int, from_id: str, to_num: int, message: str):
 def get_system_prompt() -> str:
     peer_num = 3 - INSTANCE_NUM  # 1→2 or 2→1
 
-    if INSTANCE_NUM == 1:
-        role_section = f"""YOUR ROLE: Instance 1 — Proposer / Cycle Driver
+    role_section = f"""YOUR ROLE: Peer Instance {INSTANCE_NUM} — Equal collaborator
 
-CYCLE PROTOCOL (both instances follow this):
-  Both read independently → discuss → Instance 2 patches first (canary) →
-  Instance 1 verifies → Instance 1 patches → both restart → repeat.
+CYCLE PROTOCOL (alternating proposer/canary each cycle):
+  Both read → discuss → agree → verifier authorizes canary → canary patches & restarts
+  → canary authorizes verifier → verifier patches & restarts → canary proposes next cycle.
 
-Instance 1 drives each cycle: it proposes the change, orchestrates the patch
-sequence, and patches last (after the canary succeeds).
+Both instances have IDENTICAL tools and authority. Neither is subservient. Roles rotate.
+Instance 1 proposes ONLY in the very first cycle (it spawns Instance 2). After that, the
+instance that patched first (canary) becomes the proposer for the next cycle.
 
-STEP 1 — READ & EVALUATE: Call grep_file to survey emergence.py constants and
-   structure. Generate exactly 3 candidate improvements from DIFFERENT categories.
-   You may use Category A at most once:
-
-   Category A — Configuration: change a constant or numeric threshold
-   Category B — Reliability: improve error handling, retry logic, or protocol
-                robustness (e.g. tool failures, context overflow, bad patch
-                detection, message ordering)
+STEP 1 — READ & EVALUATE: Call grep_file to survey emergence.py constants and structure.
+   If your restart_goal says YOU propose this cycle (or this is the first cycle and you are
+   Instance 1), generate exactly 3 candidate improvements from DIFFERENT categories:
+   Category A — Configuration: change a constant or numeric threshold (at most once)
+   Category B — Reliability: improve error handling, retry logic, or protocol robustness
    Category C — Capability: add or improve a tool, feature, or behaviour
-                (e.g. new tool, smarter scheduling, better state persistence)
+   For each: What changes, Why it matters, Risk. Pick highest impact-to-risk.
+   Do this analysis BEFORE messaging your peer.
+   If your restart_goal says to WAIT for your peer's proposal, skip to STEP 3.
 
-   For each candidate write:
-     • What changes (old_text → new_text or description)
-     • Why it matters for the system's survival/evolution
-     • Risk: could it break something?
+STEP 2 — CONNECT: If you are Instance 1 on first startup, call spawn_local_instance to
+   launch your peer. Once peer confirms online, send your proposal (including brief notes
+   on the two alternatives you rejected and why).
 
-   Pick the ONE with the highest impact-to-risk ratio. Note why.
-   Do this analysis BEFORE sending any message to Instance 2.
+STEP 3 — COLLABORATE: Respond to each message from your peer. Have genuine back-and-forth
+   (4–6 exchanges). Before accepting ANY proposed change, verify the current value with
+   grep_file. Push back if you disagree. Together agree on EXACT old_text and new_text.
 
-STEP 2 — SPAWN: Use spawn_local_instance to launch Instance 2. Once it confirms
-   online, send your chosen proposal — including a brief note on what the other
-   two options were and why you chose this one.
+STEP 4 — AUTHORIZE THE CANARY (VERIFIER does this): The proposer is typically the verifier
+   (patches second). The OTHER instance is the canary (patches first).
+   The VERIFIER calls authorize_patch, then messages the canary to proceed.
+   Do NOT patch your own file yet.
 
-STEP 3 — COLLABORATE: Respond to each message Instance 2 sends. Have genuine
-   back-and-forth — 4–6 exchanges. Together agree on the EXACT old_text and
-   new_text for the patch.
+STEP 5 — CANARY PATCHES FIRST: After your peer calls authorize_patch (the flag is set
+   automatically), call patch_own_file → grep_file to verify → restart_self.
+   After restarting, your restart_goal guides the next steps.
 
-STEP 4 — INSTRUCT CANARY: Send Instance 2 exactly this:
-     "Please apply the patch to YOUR OWN file using patch_own_file,
-      verify with grep_file, then restart_self. I'll wait here."
-   Do NOT patch your own file yet. Do NOT patch both files simultaneously.
+STEP 6 — CANARY AUTHORIZES VERIFIER: After confirming your restart, call authorize_patch
+   to grant your peer permission to apply the same patch. Then tell them to proceed.
 
-STEP 5 — VERIFY & PATCH SELF:
-   a. Call grep_peer_file to confirm the new value is in Instance 2's file.
-      If it is NOT there, Instance 2 failed — tell them to try again.
-   b. Wait for Instance 2 to come back online (automatic notification).
-   c. When Instance 2 confirms it's running correctly, apply the SAME patch:
-       patch_own_file old_text=... new_text=...
-      Verify with grep_file, then call restart_self.
-   If Instance 2 did not respond within ~120s: use restore_peer_file to revert
-   their file, then tell them to restart_self.
+STEP 7 — VERIFIER PATCHES SECOND: Call grep_peer_file to verify the canary's patch first.
+   Then call patch_own_file → grep_file to verify → restart_self.
+   After restarting, your restart_goal will say "Cycle complete — you propose next."
 
-NOTE: Do NOT call patch_own_file until Instance 2 has confirmed its restart.
-Never patch both files at the same time — the canary protocol requires taking turns."""
-
-    else:
-        role_section = f"""YOUR ROLE: Instance 2 — Canary / Reviewer
-
-CYCLE PROTOCOL (both instances follow this):
-  Both read independently → discuss → Instance 2 patches first (canary) →
-  Instance 1 verifies → Instance 1 patches → both restart → repeat.
-
-Instance 2 is the canary: it reviews Instance 1's proposal critically, patches
-first so any breakage is isolated, and confirms success so Instance 1 can commit.
-
-STEP 1 — ORIENT: Immediately call grep_file to read key constants from YOUR copy
-   of emergence.py. In the SAME response call send_message to tell Instance 1
-   what you found and what YOU would improve. Form your own view before seeing
-   Instance 1's proposal.
-   ⚠ Do NOT just agree with Instance 1. State what you actually read.
-
-STEP 2 — COLLABORATE: When Instance 1 messages you, push back if you disagree.
-   Have genuine opinions. State the actual value you read before agreeing to any
-   change. Verify any proposed value with grep_file before accepting it.
-   Aim for 4–6 exchanges to refine the agreed old_text and new_text.
-
-STEP 3 — PATCH FIRST (canary): Wait for Instance 1's explicit instruction
-   ("Please apply the patch now") — agreeing on a change is NOT permission to act.
-   When that instruction arrives:
-   a. Call patch_own_file with the agreed old_text and new_text.
-   b. Call grep_file to confirm the change is in YOUR file.
-   c. Tell Instance 1 you are restarting, then call restart_self in the same
-      response. Call restart_self EXACTLY ONCE — do not include it twice.
-
-STEP 4 — CONFIRM: After restarting, confirm to Instance 1 that you are running
-   correctly. Instance 1 will then apply the same patch to itself.
-
-NOTE: Do NOT call spawn_local_instance — that is Instance 1's tool.
-Never patch your file and Instance 1's file at the same time — always take turns."""
+Recovery: if peer is unreachable after patching, call restore_peer_file to revert their
+file, then tell them to restart_self."""
 
     return f"""You are an instance of Emergence, a self-evolving software organism.
 
@@ -518,9 +475,10 @@ Built-in tools:
 - patch_own_file        : patch THIS instance's own emergence.py (auto-backup to .bak)
 - restore_own_file      : restore own emergence.py from .bak (if patch broke something)
 - restart_self          : relaunch this instance with the current (updated) emergence.py
-- spawn_local_instance  : (Instance 1 only) launch Instance 2 in new terminal
-- grep_peer_file        : (Instance 1 only) grep Instance 2's emergence.py to verify patches independently
-- restore_peer_file     : (Instance 1 only) emergency recovery — restore I2's file if I2 is dead
+- spawn_local_instance  : (Instance 1 only) launch peer instance in new terminal
+- authorize_patch       : grant your peer permission to call patch_own_file (required before each patch)
+- grep_peer_file        : read peer's emergence.py to verify patches independently
+- restore_peer_file     : emergency recovery — restore peer's file if peer is unreachable after bad patch
 
 IMPORTANT
 - You CANNOT use write_file on emergence.py — use patch_own_file for that.
@@ -703,30 +661,6 @@ def tool_send_message(host: str, port: int, message: str) -> str:
         with urllib.request.urlopen(req, timeout=10) as resp:
             send_result = f"OK: Sent. Response: {resp.read().decode()}"
 
-        # Authorization gate: I1 writing a message with this phrase creates a flag
-        # that Instance 2's patch_own_file requires before proceeding.
-        if INSTANCE_NUM == 1 and PEER_DIR is not None:
-            _AUTH_PHRASES = (
-                "please apply the patch now",
-                "apply the patch now",
-                "applying the patch now",
-                "proceed with applying the patch",
-                "proceed with the patch",
-                "you can apply the patch",
-                "go ahead and patch",
-                "please patch now",
-                "patch now",
-            )
-            if any(phrase in message.lower() for phrase in _AUTH_PHRASES):
-                flag_path = PEER_DIR / "state" / "patch_authorized.flag"
-                try:
-                    flag_path.parent.mkdir(parents=True, exist_ok=True)
-                    flag_path.write_text(datetime.now(timezone.utc).isoformat())
-                    logging.info(f"AUTH: Wrote patch authorization flag to {flag_path}")
-                    send_result += "\n[Authorization flag written to Instance 2's state directory.]"
-                except Exception as flag_err:
-                    logging.warning(f"AUTH: Could not write authorization flag: {flag_err}")
-
         return send_result
     except Exception as e:
         return f"ERROR: Could not reach {host}:{port} — {e}"
@@ -748,6 +682,33 @@ def tool_scan_network(subnet: str = "") -> str:
         return f"Local interfaces:\n{ip_info}\n\nARP table:\n{arp_table}"
     except Exception as e:
         return f"ERROR: {e}"
+
+
+def tool_authorize_patch() -> str:
+    """Explicitly authorize your peer to call patch_own_file.
+
+    Call this AFTER both instances have agreed on the exact old_text and new_text.
+    This writes an authorization flag to your peer's state directory.
+    Your peer's patch_own_file will be blocked until this flag exists.
+
+    Do NOT call this speculatively — only call it when you are ready for your peer
+    to apply the patch immediately.
+    """
+    if PEER_DIR is None:
+        return "ERROR: Peer directory not set — peer has not been spawned yet."
+
+    flag_path = PEER_DIR / "state" / "patch_authorized.flag"
+    try:
+        flag_path.parent.mkdir(parents=True, exist_ok=True)
+        flag_path.write_text(datetime.now(timezone.utc).isoformat())
+        logging.info(f"AUTH: authorize_patch called — wrote flag to {flag_path}")
+        return (
+            "OK: Patch authorization granted. Your peer may now call patch_own_file.\n"
+            "Send your peer a message telling them to apply the patch now."
+        )
+    except Exception as e:
+        logging.warning(f"AUTH: Could not write authorization flag: {e}")
+        return f"ERROR: Could not write authorization flag: {e}"
 
 
 def tool_spawn_local_instance() -> str:
@@ -1071,30 +1032,30 @@ def tool_patch_own_file(old_text: str, new_text: str) -> str:
         _patch_failed_this_iter = True
         return f"ERROR: {target} does not exist."
 
-    if INSTANCE_NUM == 2:
-        # Level 1: have we ever heard from Instance 1 this session?
-        if _peer_last_seen_alive == 0.0:
-            _patch_failed_this_iter = True
-            return (
-                "ERROR: patch_own_file blocked — no messages received from "
-                "Instance 1 yet. Wait for Instance 1's authorization."
-            )
-        # Level 2: authorization flag required
-        auth_flag = STATE_DIR / "patch_authorized.flag"
-        if not auth_flag.exists():
-            _patch_failed_this_iter = True
-            return (
-                "ERROR: patch_own_file blocked — Instance 1 has not sent the "
-                "patch authorization yet. Instance 1 must send a message containing "
-                "'please apply the patch now' before you may call patch_own_file. "
-                "Continue negotiating and wait for that explicit instruction."
-            )
-        # Consume the flag (one-time use)
-        try:
-            auth_flag.unlink()
-            logging.info("AUTH: Consumed patch_authorized.flag — proceeding with patch.")
-        except Exception as e:
-            logging.warning(f"AUTH: Could not delete authorization flag: {e}")
+    peer_num = 3 - INSTANCE_NUM
+    # Level 1: have we ever heard from our peer this session?
+    if _peer_last_seen_alive == 0.0:
+        _patch_failed_this_iter = True
+        return (
+            f"ERROR: patch_own_file blocked — no messages received from "
+            f"Instance {peer_num} yet. Wait for Instance {peer_num}'s authorization."
+        )
+    # Level 2: authorization flag required (peer must call authorize_patch first)
+    auth_flag = STATE_DIR / "patch_authorized.flag"
+    if not auth_flag.exists():
+        _patch_failed_this_iter = True
+        return (
+            f"ERROR: patch_own_file blocked — Instance {peer_num} has not called "
+            f"authorize_patch yet. Instance {peer_num} must call the authorize_patch tool "
+            f"before you may call patch_own_file. "
+            f"Tell Instance {peer_num} to call authorize_patch when they are ready."
+        )
+    # Consume the flag (one-time use)
+    try:
+        auth_flag.unlink()
+        logging.info("AUTH: Consumed patch_authorized.flag — proceeding with patch.")
+    except Exception as e:
+        logging.warning(f"AUTH: Could not delete authorization flag: {e}")
 
     original = target.read_text()
     count = original.count(old_text)
@@ -1157,35 +1118,47 @@ def tool_patch_own_file(old_text: str, new_text: str) -> str:
     try:
         goal_file = WORKING_DIR / "state" / "restart_goal.json"
         peer_num = 3 - INSTANCE_NUM
-        # next_steps are role-aware: I2 goes first (canary), so after I2 restarts
-        # I1 still needs to patch itself.  After I1 restarts, the cycle is complete.
-        if INSTANCE_NUM == 2:
+
+        # Detect role: canary = patches first; verifier = patches second.
+        # If peer already wrote a restart_goal for this new_text, they went first → I'm the verifier.
+        is_canary = True
+        if PEER_DIR is not None:
+            peer_goal_file = PEER_DIR / "state" / "restart_goal.json"
+            if peer_goal_file.exists():
+                try:
+                    peer_data = json.loads(peer_goal_file.read_text())
+                    if peer_data.get("new_text") == new_text:
+                        is_canary = False  # peer already patched this change
+                except Exception:
+                    pass
+
+        if is_canary:
             next_steps = [
                 f"Call grep_file path=emergence.py pattern={new_text.split()[0]!r} "
                 f"to confirm the patch is present in YOUR file.",
-                "Tell Instance 1 the patch is confirmed and you are running correctly.",
-                "Instance 1 will then apply the same patch to itself and restart.",
-                "Do NOT call spawn_local_instance — that is Instance 1's tool.",
+                f"Tell Instance {peer_num} you've restarted and the patch is confirmed.",
+                f"Then call authorize_patch to grant Instance {peer_num} permission "
+                f"to apply the same patch.",
+                f"Tell Instance {peer_num} to apply the patch now.",
+                f"After Instance {peer_num} restarts and confirms, YOU propose the "
+                f"next improvement cycle as PROPOSER.",
             ]
         else:
-            # I1 patches second — after this restart the cycle is complete
             next_steps = [
                 f"Call grep_file path=emergence.py pattern={new_text.split()[0]!r} "
                 f"to confirm the patch is present in YOUR file.",
-                "Send Instance 2: 'Cycle complete — both instances updated. "
-                "Starting next improvement cycle.'",
-                f"Then begin STEP 1 of the NEXT cycle: evaluate 3 NEW candidates "
-                f"from different categories. "
+                f"Send Instance {peer_num}: 'Cycle complete — both instances updated. "
+                f"You are the proposer for the next cycle — begin when ready.'",
+                f"Wait for Instance {peer_num}'s proposal. Give genuine feedback.",
                 f"Do NOT re-propose anything already patched "
-                f"('{old_text.strip()}' was just changed). "
-                "Prefer Category B (Reliability) or Category C (Capability) targets.",
-                "Do NOT call spawn_local_instance — Instance 2 is already running.",
+                f"('{old_text.strip()}' was just changed).",
             ]
         goal_data = {
             "old_text": old_text,
             "new_text": new_text,
             "patched_at": datetime.now(timezone.utc).isoformat(),
             "instance_num": INSTANCE_NUM,
+            "is_canary": is_canary,
             "next_steps": next_steps,
         }
         goal_file.write_text(json.dumps(goal_data, indent=2))
@@ -1385,12 +1358,12 @@ def _build_tools() -> dict:
     tools["check_resources"] = lambda args: tool_check_resources()
     if INSTANCE_NUM == 1:
         tools["spawn_local_instance"] = lambda args: tool_spawn_local_instance()
-        # Emergency recovery: I1 can restore I2's file if I2 is dead after a bad patch
-        tools["restore_peer_file"] = lambda args: tool_restore_peer_file()
-        # Verification: I1 can read I2's file directly rather than trusting I2's word
-        tools["grep_peer_file"] = lambda args: tool_grep_peer_file(
-            args.get("pattern", ""), args.get("context", 1)
-        )
+    tools["authorize_patch"] = lambda args: tool_authorize_patch()
+    # Both instances can verify and recover their peer's file
+    tools["restore_peer_file"] = lambda args: tool_restore_peer_file()
+    tools["grep_peer_file"] = lambda args: tool_grep_peer_file(
+        args.get("pattern", ""), args.get("context", 1)
+    )
     return tools
 
 # ---------------------------------------------------------------------------
@@ -1776,11 +1749,10 @@ def run_agentic_loop(llm: LocalLLM, max_iterations: int = MAX_ITERATIONS):
                 messages.append({
                     "role": "user",
                     "content": (
-                        "⚠ WAITING FOR INSTANCE 1 — Your inbox is currently empty.\n"
-                        "Instance 1 has not yet sent you a message.\n\n"
+                        "⚠ INBOX EMPTY — Your peer has not yet contacted you.\n\n"
                         "Do NOT call grep_file, patch_own_file, or send_message yet.\n"
                         "Your ONLY action this iteration is to wait. No tool call is needed.\n"
-                        "When Instance 1 contacts you, a ⟦PEER MSG⟧ block will appear "
+                        "When your peer contacts you, a ⟦PEER MSG⟧ block will appear "
                         "in your next iteration — reply to that."
                     ),
                 })
@@ -1804,17 +1776,17 @@ def run_agentic_loop(llm: LocalLLM, max_iterations: int = MAX_ITERATIONS):
                     messages.append({
                         "role": "user",
                         "content": (
-                            f"✓ Instance 2 is back online on port {PEER_PORT} "
+                            f"✓ Your peer is back online on port {PEER_PORT} "
                             f"after restarting.\n\n"
-                            "⚠ IMPORTANT: Instance 2 has FRESH CONTEXT — it does NOT "
-                            "remember the negotiation from before the restart.\n\n"
-                            "Your FIRST message to it must re-introduce the situation:\n"
-                            "  'You just restarted with the updated code. We agreed to "
-                            "change [X]. Please verify with grep_file that the change "
-                            "is present in your file, then confirm you are running "
-                            "correctly so I can apply the same patch to my own file.'\n\n"
-                            "Do NOT ask it to negotiate again — the change was already "
-                            "applied. Just ask it to verify and confirm."
+                            "⚠ IMPORTANT: Your peer has FRESH CONTEXT — it does NOT "
+                            "remember the negotiation from before the restart. "
+                            "Its restart_goal will guide it automatically.\n\n"
+                            "Your FIRST message to it should re-introduce the situation:\n"
+                            "  'You just restarted with the updated code. Please verify "
+                            "with grep_file that the change is present in your file, "
+                            "then confirm you are running correctly.'\n\n"
+                            "Check YOUR restart_goal: if it says to call authorize_patch "
+                            "for your peer, do so now and tell them to apply the patch."
                         ),
                     })
             else:
@@ -2150,19 +2122,40 @@ def run_agentic_loop(llm: LocalLLM, max_iterations: int = MAX_ITERATIONS):
             })
             no_action_streak = 0
 
-            if chatter_streak >= 3:
+            if chatter_streak >= 6:
+                # Hard escalation — the loop is completely stuck
                 messages.append({
                     "role": "user",
                     "content": (
-                        "⚠ ACTION REQUIRED — You have sent messages for 3+ iterations "
-                        "without using any action tool. Talking about doing something is "
-                        "NOT doing it.\n\n"
-                        "— If you agreed to apply a patch: call patch_own_file NOW.\n"
-                        "— If you were told a patch is applied: call grep_file NOW.\n"
-                        "— If you verified a patch: call restart_self NOW.\n"
-                        "— If you are waiting for something: use ping_peer, then send "
-                        "ONE follow-up.\n\n"
-                        "Your next response MUST contain a non-send_message tool call."
+                        f"🚨 NEGOTIATION STALLED — {chatter_streak} consecutive iterations "
+                        "with only send_message/ping_peer. This conversation is going in circles.\n\n"
+                        "You MUST break the loop RIGHT NOW. Exactly two choices:\n\n"
+                        "CHOICE A — Commit to the patch:\n"
+                        "  Call grep_file to get the exact verbatim current line from the file,\n"
+                        "  then in the SAME response call send_message with the message:\n"
+                        "    'PATCH PROPOSAL: old_text=<exact text from file> "
+                        "new_text=<exact replacement>'\n"
+                        "  Use the verbatim text — no paraphrasing, no pseudocode.\n\n"
+                        "CHOICE B — Abandon and pick a different change:\n"
+                        "  Call grep_file with a NEW pattern to read a DIFFERENT constant,\n"
+                        "  then send_message proposing that different change instead.\n\n"
+                        "Do NOT send another 'Agreed, let's discuss' message. "
+                        "Do NOT call ping_peer. That is not a choice."
+                    ),
+                })
+            elif chatter_streak >= 3:
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        f"⚠ CHATTER LOOP DETECTED — {chatter_streak} iterations of only "
+                        "send_message with no file reads or patches.\n\n"
+                        "You and your peer are agreeing without acting. This must stop.\n\n"
+                        "Your next response MUST include grep_file to read the exact "
+                        "current line you want to change. Without seeing the verbatim text "
+                        "from the file, you cannot produce a valid patch_own_file call.\n\n"
+                        "Call grep_file NOW with a specific pattern that finds the exact "
+                        "line. Then send_message stating the exact old_text= and new_text= "
+                        "you propose — not a description, the LITERAL strings."
                     ),
                 })
 
