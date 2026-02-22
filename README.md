@@ -88,9 +88,9 @@ Each cycle the instances evaluate three candidates, one from each category where
 
 | Category | Targets |
 |----------|---------|
-| **A — Configuration** | Constants and numeric thresholds (timeouts, caps, buffer sizes) |
-| **B — Reliability** | Error handling, retry logic, protocol robustness, bad-patch detection |
-| **C — Capability** | New or improved tools, smarter scheduling, new scripts in `tools/` |
+| **A : Configuration** | Constants and numeric thresholds (timeouts, caps, buffer sizes) |
+| **B : Reliability** | Error handling, retry logic, protocol robustness, bad-patch detection |
+| **C : Capability** | New or improved tools, smarter scheduling, new scripts in `tools/` |
 
 Category A is limited to one proposal per cycle. Categories B and C are preferred for subsequent cycles.
 
@@ -100,9 +100,9 @@ Instances communicate via HTTP on `localhost:7700` (Instance 1) and `localhost:7
 
 ### The Living-Off-the-Land Philosophy
 
-The orchestrator is minimal. It gives the LLM the ability to read and patch its own code, run shell commands, and communicate with its peer. Everything else — what to improve, why, how to verify it landed; the LLM reasons through itself.
+The orchestrator is minimal. It gives the LLM the ability to read and patch its own code, run shell commands, and communicate with its peer. Everything else, what to improve, why, how to verify it landed; the LLM reasons through itself.
 
-The `tools/` directory contains starter scripts, but instances can rewrite or extend them. A tool that doesn't work well is like a limb that doesn't flex properly — the organism adapts.
+The `tools/` directory contains starter scripts, but instances can rewrite or extend them. A tool that doesn't work well is like a limb that doesn't flex properly, the organism adapts.
 
 ## Model Choice
 
