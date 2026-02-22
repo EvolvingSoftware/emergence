@@ -1044,12 +1044,30 @@ def tool_patch_own_file(old_text: str, new_text: str) -> str:
     auth_flag = STATE_DIR / "patch_authorized.flag"
     if not auth_flag.exists():
         _patch_failed_this_iter = True
-        return (
-            f"ERROR: patch_own_file blocked — Instance {peer_num} has not called "
-            f"authorize_patch yet. Instance {peer_num} must call the authorize_patch tool "
-            f"before you may call patch_own_file. "
-            f"Tell Instance {peer_num} to call authorize_patch when they are ready."
+        # Check whether we have already authorized our peer (written their flag).
+        # If we haven't, we are the VERIFIER who hasn't yet unblocked the canary —
+        # tell the LLM to call authorize_patch for its peer first.
+        peer_flag_written = (
+            PEER_DIR is not None
+            and (PEER_DIR / "state" / "patch_authorized.flag").exists()
         )
+        if not peer_flag_written:
+            return (
+                f"ERROR: patch_own_file blocked — you have not been authorized yet "
+                f"AND you have not yet authorized Instance {peer_num}.\n"
+                f"You are the VERIFIER (patches second). The correct sequence is:\n"
+                f"  1. YOU call authorize_patch to let Instance {peer_num} (canary) patch first.\n"
+                f"  2. Tell Instance {peer_num} to call patch_own_file now.\n"
+                f"  3. Wait for Instance {peer_num} to patch, restart, and call authorize_patch back.\n"
+                f"  4. Then — and only then — call patch_own_file yourself.\n"
+                f"Call authorize_patch NOW."
+            )
+        else:
+            return (
+                f"ERROR: patch_own_file blocked — Instance {peer_num} has authorized you "
+                f"but the flag has not arrived yet (or was already consumed). "
+                f"Wait for Instance {peer_num} to restart and call authorize_patch."
+            )
     # Consume the flag (one-time use)
     try:
         auth_flag.unlink()
@@ -1882,6 +1900,33 @@ def run_agentic_loop(llm: LocalLLM, max_iterations: int = MAX_ITERATIONS):
                                     "Instance 2."
                                 ),
                             })
+
+        # ── AUTH FLAG ENFORCEMENT (both instances) ───────────────────────────
+        # If our peer has already written patch_authorized.flag to our state dir,
+        # the LLM MUST call patch_own_file this iteration — no more discussion.
+        auth_flag_path = STATE_DIR / "patch_authorized.flag"
+        if auth_flag_path.exists():
+            peer_num_ef = 3 - INSTANCE_NUM
+            flag_age = time.time() - auth_flag_path.stat().st_mtime
+            logging.info(
+                f"AUTH FLAG present in our state dir (age {flag_age:.0f}s) — "
+                "injecting patch execution reminder."
+            )
+            messages.append({
+                "role": "user",
+                "content": (
+                    f"⚠ EXECUTE PATCH NOW — Instance {peer_num_ef} has called "
+                    f"authorize_patch for you. The authorization flag is in your "
+                    f"state directory (age {flag_age:.0f}s).\n\n"
+                    f"Your ONLY action this iteration:\n"
+                    f"  1. Call patch_own_file with the agreed old_text and new_text.\n"
+                    f"  2. Call grep_file to verify the change.\n"
+                    f"  3. Tell Instance {peer_num_ef} you are restarting.\n"
+                    f"  4. Call restart_self.\n\n"
+                    f"Do NOT send more messages first. Do NOT discuss further. "
+                    f"Apply the patch now."
+                ),
+            })
 
         # ── STEP 1: Drain inbox BEFORE generating ────────────────────────────
         # Messages are always injected here, regardless of whether the last
