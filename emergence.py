@@ -537,8 +537,19 @@ def tool_grep_file(path: str, pattern: str, context: int = 2) -> str:
 
     Use this instead of read_file when you only need to find a specific constant
     or function — read_file truncates at 2000 chars and may miss things deep in the file.
+    Pattern should be SHORT (2-5 words / a function name / a constant name).
+    To read a whole function body, use read_file_lines with the line number from file_outline.
     """
     import re as _re
+    # Reject absurdly long patterns — these are always hallucinated signatures,
+    # never real grep patterns. Redirect to read_file_lines.
+    if len(pattern) > 120:
+        return (
+            "ERROR: Pattern is too long for grep_file (>120 chars). "
+            "grep_file is for SHORT search terms like a function name or constant. "
+            "To read a function body, use file_outline to find its line number, "
+            "then read_file_lines path=emergence.py start=<line> end=<line+40>."
+        )
     logging.info(f"GREP: {path} for '{pattern}'")
     try:
         p = Path(path)
@@ -566,7 +577,7 @@ def tool_grep_file(path: str, pattern: str, context: int = 2) -> str:
         if not results:
             return f"No matches for '{pattern}' in {path}"
         output = "\n".join(results)
-        note = "\nNOTE: The '>>> ' prefix above is display-only — it does NOT appear in the file.\nDo NOT include it in old_text when calling propose_patch."
+        note = "\nNOTE: The '>>> ' prefix above is display-only — it does NOT appear in the file.\nDo NOT include it in old_text OR new_text when calling propose_patch."
         full = output + note
         return full[:MAX_TOOL_OUTPUT] if len(full) > MAX_TOOL_OUTPUT else full
     except Exception as e:
@@ -1271,6 +1282,10 @@ _PROTECTED_PATTERNS = [
     "PEER_PORT =",
 ]
 
+# Track repeated failures per old_text so we can inject a hard reset after 2 strikes.
+# Keys are the cleaned old_text strings; values are failure counts this session.
+_propose_failures: dict[str, int] = {}
+
 
 def tool_propose_patch(old_text: str, new_text: str, rationale: str) -> str:
     """Formally propose a code change to your peer for YES/NO approval.
@@ -1284,16 +1299,34 @@ def tool_propose_patch(old_text: str, new_text: str, rationale: str) -> str:
     You do NOT need to call patch_own_file, authorize_patch, or restart_self.
     After approval, Python handles all of that. You will restart automatically.
     """
+    global _propose_failures
     if PEER_DIR is None:
         return "ERROR: Peer not spawned yet. Call spawn_local_instance first."
 
-    # Strip >>> display prefix if accidentally included
-    clean_old = old_text
-    if clean_old.lstrip().startswith(">>>"):
-        clean_old = "\n".join(
+    def _strip_display_prefix(text: str) -> str:
+        """Remove the '>>> ' display prefix grep_file adds to matching lines."""
+        if not any(l.lstrip().startswith(">>>") for l in text.splitlines()):
+            return text
+        return "\n".join(
             l[4:] if l.lstrip().startswith(">>> ") else l
-            for l in clean_old.splitlines()
+            for l in text.splitlines()
         ).strip()
+
+    clean_old = _strip_display_prefix(old_text)
+    clean_new = _strip_display_prefix(new_text)
+
+    # Check for repeated failures on the same old_text — hard reset after 2 strikes
+    fail_count = _propose_failures.get(clean_old, 0)
+    if fail_count >= 2:
+        del _propose_failures[clean_old]
+        return (
+            f"ERROR: You have proposed this same old_text {fail_count} times and it "
+            f"keeps failing. ABANDON this proposal entirely.\n\n"
+            f"Start fresh: call file_outline path=emergence.py to see the real "
+            f"structure of the file, then pick a DIFFERENT function or constant to "
+            f"improve. Use read_file_lines to read the exact code before proposing. "
+            f"Do NOT re-propose the same old_text again."
+        )
 
     # Protected constants check
     for pat in _PROTECTED_PATTERNS:
@@ -1309,11 +1342,14 @@ def tool_propose_patch(old_text: str, new_text: str, rationale: str) -> str:
     content = target.read_text()
     count = content.count(clean_old)
     if count == 0:
+        _propose_failures[clean_old] = _propose_failures.get(clean_old, 0) + 1
         snippet = content[:200].replace("\n", "\\n")
         return (
-            f"ERROR: old_text not found in emergence.py.\n"
-            f"Verify the exact text with grep_file first. "
-            f"File starts with: {snippet}"
+            f"ERROR: old_text not found in emergence.py "
+            f"(failure #{_propose_failures[clean_old]} for this old_text).\n"
+            f"Do NOT retry with the same old_text. Use grep_file with a SHORT "
+            f"pattern (the function name only, e.g. 'def tool_read_file') to find "
+            f"the real code, then copy the EXACT lines shown into old_text."
         )
     if count > 1:
         lines = content.splitlines()
@@ -1323,17 +1359,23 @@ def tool_propose_patch(old_text: str, new_text: str, rationale: str) -> str:
             f"Occurrences:\n" + "\n".join(hits[:8]) + "\n\nProvide more surrounding context."
         )
 
-    # Syntax validation
-    patched_content = content.replace(clean_old, new_text, 1)
+    # Syntax validation — use clean_new (>>> stripped) for the compile check
+    patched_content = content.replace(clean_old, clean_new, 1)
     try:
         compile(patched_content, "emergence.py", "exec")
     except SyntaxError as e:
-        return f"ERROR: Proposed patch creates a Python syntax error at line {e.lineno}: {e.msg}"
+        _propose_failures[clean_old] = _propose_failures.get(clean_old, 0) + 1
+        return (
+            f"ERROR: Proposed patch creates a Python syntax error at line {e.lineno}: {e.msg} "
+            f"(failure #{_propose_failures[clean_old]} for this old_text).\n"
+            f"Check new_text carefully — it must be valid Python. "
+            f"Do NOT include the '>>> ' display prefix in new_text."
+        )
 
     # Write proposal to peer's state dir
     proposal = {
         "old_text": clean_old,
-        "new_text": new_text,
+        "new_text": clean_new,
         "rationale": rationale,
         "proposed_at": datetime.now(timezone.utc).isoformat(),
         "from_instance": INSTANCE_NUM,
@@ -1779,34 +1821,13 @@ class LocalLLM:
             sys.exit(1)
 
     def generate(self, messages: list[dict], max_tokens: int = 1024) -> str:
-        """Generate a response given a conversation history.
-
-        Applies prompt repetition (Promptless Reasoning, 2025): the full formatted
-        prompt body is repeated before the generation token.  For causal LMs this
-        lets tokens near the end attend to tokens at the start via the repeated
-        copy, improving instruction-following without increasing generated-token
-        count or latency.  Effect is positive for non-reasoning models and neutral
-        for reasoning models, so it's always safe to apply.
-        """
+        """Generate a response given a conversation history."""
         from mlx_lm import generate
 
         if hasattr(self.tokenizer, "apply_chat_template"):
-            # Build prompt body (no generation prompt) and generation suffix separately
-            # so we can repeat only the body: body + body + gen_suffix.
-            try:
-                prompt_body = self.tokenizer.apply_chat_template(
-                    messages, tokenize=False, add_generation_prompt=False
-                )
-                prompt_with_gen = self.tokenizer.apply_chat_template(
-                    messages, tokenize=False, add_generation_prompt=True
-                )
-                gen_suffix = prompt_with_gen[len(prompt_body):]
-                prompt = prompt_body + prompt_body + gen_suffix
-            except Exception:
-                # Fallback: some tokenizers don't support add_generation_prompt=False
-                prompt = self.tokenizer.apply_chat_template(
-                    messages, tokenize=False, add_generation_prompt=True
-                )
+            prompt = self.tokenizer.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True
+            )
         else:
             parts = []
             for msg in messages:
@@ -1814,8 +1835,7 @@ class LocalLLM:
                 content = msg["content"]
                 parts.append(f"<|{role}|>\n{content}")
             parts.append("<|assistant|>\n")
-            body = "\n".join(parts[:-1])
-            prompt = body + "\n" + body + "\n" + parts[-1]
+            prompt = "\n".join(parts)
 
         response = generate(
             self.model,
@@ -1989,6 +2009,7 @@ def run_agentic_loop(llm: LocalLLM, max_iterations: int = MAX_ITERATIONS):
     # do NOT tell I1 to call spawn_local_instance.
     if INSTANCE_NUM == 1:
         try:
+            outline = tool_file_outline("emergence.py")
             snapshot = tool_grep_file("emergence.py", r"^[A-Z][A-Z_]+ = ", context=0)
             if restart_goal_loaded:
                 patched_old = goal_data.get("old_text", "")
@@ -2003,15 +2024,18 @@ def run_agentic_loop(llm: LocalLLM, max_iterations: int = MAX_ITERATIONS):
             else:
                 followup = (
                     "Now follow your role instructions: call spawn_local_instance first.\n\n"
-                    "⚠ Do NOT propose changing MAX_ITERATIONS or MAX_TOOL_OUTPUT if they "
-                    "already show non-default values above. Pick something genuinely different."
+                    "⚠ IMPORTANT: Only propose changes to functions and constants that appear "
+                    "in the outline above. Do NOT invent function names or code that is not "
+                    "shown above — that will always fail with 'old_text not found'.\n"
+                    "Use grep_file or read_file_lines to read the EXACT current code of any "
+                    "function before proposing a change to it."
                 )
             messages.append({
                 "role": "user",
                 "content": (
-                    "Current constant values in YOUR emergence.py "
-                    "(auto-read at startup — base proposals on these, "
-                    "not on the system prompt examples):\n\n"
+                    "File structure of YOUR emergence.py (auto-read at startup):\n\n"
+                    f"{outline}\n\n"
+                    "Current constants:\n\n"
                     f"{snapshot}\n\n"
                     f"{followup}"
                 ),
