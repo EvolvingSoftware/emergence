@@ -153,6 +153,11 @@ _patch_failed_this_iter: bool = False
 # both instances can track conversation order even across restarts.
 _msg_seq: int = 0
 
+# Ring buffer of the last 5 outgoing message texts, used to detect
+# "apply the patch" deadlock loops where both instances keep asking the other
+# to act without anyone calling propose_patch.
+_outgoing_msg_buffer: list[str] = []
+
 # Rolling snapshot of recent conversation messages (non-system roles only).
 # Updated after each LLM generation.  Saved to restart_goal.json by
 # tool_restart_self so the restarted instance has conversational context.
@@ -303,22 +308,15 @@ YOUR GOALS (background, always in mind)
 
 HOW TOOLS WORK — CRITICAL RULES
 ================================
-⚠ CRITICAL: Agreeing to do something ≠ doing it. If you say "I'll apply the
-patch" but do NOT include a patch_own_file ```tool block in that same response,
-the patch is NOT applied. If you say "I'll verify" but do NOT include a grep_file
-```tool block, you have NOT verified. If you say "I'll restart" but do NOT include
-a restart_self ```tool block, you have NOT restarted. Words are NOT actions.
-Only tool calls are actions.
+⚠ CRITICAL: Agreeing to do something ≠ doing it. If you say "I'll propose the
+patch" but do NOT include a propose_patch ```tool block in that same response,
+the patch is NOT proposed. If you say "I'll verify" but do NOT include a grep_file
+```tool block, you have NOT verified. Words are NOT actions. Only tool calls are actions.
 
-⚠ NEVER claim a patch is applied before calling patch_own_file. The correct order
-for ANY patch operation is ALWAYS:
-  1. patch_own_file (does the actual change)
-  2. grep_file (confirms the change is there)
-  3. send_message telling the result
-  4. restart_self
-Sending "Patch applied and verified" BEFORE step 1 is a lie that breaks the
-protocol. The grep_file results do not lie — if they show the old value, you have
-NOT patched yet.
+⚠ NEVER claim a patch is applied. In the normal cycle, you call propose_patch and
+Python handles everything else — peer review, patching both files, and restarting
+both instances. You do NOT call patch_own_file, grep_file for verification, or
+restart_self in normal cycles.
 
 BEFORE EACH RESPONSE — check:
   • What have I actually done this session? (check grep results in context)
@@ -330,7 +328,7 @@ State this briefly before your tool blocks.
    The parser accepts any fenced block, but ```tool is clearest.
 
 2. You MAY include multiple ```tool blocks in one response — all will be
-   executed in order. This is useful when you want to patch_own_file AND
+   executed in order. This is useful when you want to propose_patch AND
    send_message in the same turn. Keep it to 2 at most to stay readable.
 
 3. send_message MUST use the key "message" (not "content", not "text"):
@@ -352,13 +350,12 @@ State this briefly before your tool blocks.
    Your peer has NOT sent you anything — only actual injected blocks count.
    When you see a ⟦PEER MSG⟧ block, reply with send_message immediately.
 
-5. To make a code change, use patch_own_file with the exact old text and its
-   replacement. Do NOT write_file the whole emergence.py. I2 patches itself
-   first, then I1 patches itself using the same old_text/new_text.
+5. To make a code change, call propose_patch(old_text=..., new_text=...,
+   rationale=...). Python sends it to your peer for review, then applies it to
+   both files and restarts both instances. Do NOT write_file emergence.py.
    IMPORTANT: old_text must be UNIQUE in the file — include the full line plus
-   one surrounding line of context if needed. Short snippets like "= 300" will
-   match in multiple places (including system prompt examples) and the patch
-   will fail with an error listing all occurrences.
+   one surrounding line of context if needed. Use grep_file first to copy the
+   exact text.
 
 6. To check a specific constant or function in emergence.py use grep_file,
    NOT read_file. The file is long and read_file truncates at 2000 chars,
@@ -374,34 +371,6 @@ HOW COMMUNICATION WORKS
   Use ping_peer to check status explicitly if you haven't heard back in a while.
 - If the peer doesn't reply for several iterations, use ping_peer to confirm
   they're alive, then send a follow-up message. Do not stop working.
-
-NEGOTIATION AND CHANGE PROTOCOL
-================================
-⚠ TURN-TAKING IS MANDATORY. Never patch both instances simultaneously.
-   Instance 2 always goes first (canary test). Instance 1 patches second,
-   only after Instance 2 has successfully restarted.
-
-When you agree on a change to emergence.py:
-1. Agree on the EXACT old_text and new_text via message exchange. Both instances
-   must confirm they accept the change before anyone patches anything.
-2. Instance 1 explicitly tells Instance 2: "Please apply the patch now."
-   Instance 2 must NOT patch until it receives this exact instruction.
-   Agreeing on old_text/new_text ≠ permission to patch.
-3. Instance 2 applies the patch to ITSELF (not to Instance 1):
-   a. patch_own_file with the exact old_text and new_text
-      (backup is saved automatically — use restore_own_file if needed)
-   b. grep_file to verify the change
-   c. send_message to tell I1: "Patch applied and verified. I'm restarting now."
-   d. restart_self — call this EXACTLY ONCE. A second call is blocked.
-4. Instance 1 waits. When Instance 2 comes back online (automatic notification),
-   Instance 1 applies the SAME patch to its OWN file:
-   a. patch_own_file — same old_text / new_text as Instance 2 used
-   b. grep_file to verify
-   c. restart_self — Instance 1 relaunches with updated code.
-5. Recovery (if Instance 2 doesn't come back within ~120s):
-   Instance 1 calls restore_peer_file to revert Instance 2's file,
-   then uses spawn_local_instance to restart Instance 2.
-6. System stays at 2 instances. Do NOT spawn additional processes.
 
 WORKING INDEPENDENTLY (between peer exchanges)
 ==============================================
@@ -424,22 +393,14 @@ Examples:
 ```
 
 ```tool
-{{"tool": "send_message", "args": {{"message": "I agree. I'll apply the patch now."}}}}
+{{"tool": "send_message", "args": {{"message": "I found a good improvement target. Proposing now."}}}}
 ```
 
 ```tool
-{{"tool": "patch_own_file", "args": {{"old_text": "CONSTANT_NAME = old_value", "new_text": "CONSTANT_NAME = new_value"}}}}
+{{"tool": "propose_patch", "args": {{"old_text": "def tool_example():", "new_text": "def tool_example():\n    # improved\n", "rationale": "Add inline documentation for clarity"}}}}
 ```
-⚠ old_text / new_text above are PLACEHOLDERS. Never propose specific values
-without first calling grep_file to read the actual current value from the file.
-
-Example of patching AND notifying Instance 1 in the same response (two blocks):
-```tool
-{{"tool": "patch_own_file", "args": {{"old_text": "CONSTANT_NAME = old_value", "new_text": "CONSTANT_NAME = new_value"}}}}
-```
-```tool
-{{"tool": "send_message", "args": {{"message": "Patch applied — CONSTANT_NAME is now new_value. Verifying then restarting."}}}}
-```
+⚠ old_text / new_text above are PLACEHOLDERS. Use grep_file first to copy the
+exact text from the file before constructing old_text.
 
 ```tool
 {{"tool": "grep_file", "args": {{"path": "emergence.py", "pattern": "MAX_ITERATIONS"}}}}
@@ -450,18 +411,10 @@ Example of patching AND notifying Instance 1 in the same response (two blocks):
 ```
 
 ```tool
-{{"tool": "restart_self", "args": {{}}}}
-```
-
-```tool
-{{"tool": "restore_own_file", "args": {{}}}}
-```
-
-```tool
 {{"tool": "check_resources", "args": {{}}}}
 ```
 
-Built-in tools:
+Normal cycle tools (use these):
 - file_outline         : get structural map of a file (constants, functions, classes + line numbers)
 - read_file_lines      : read a specific line range from a file
 - grep_file            : search for lines matching a pattern (>>> prefix is display-only)
@@ -471,20 +424,22 @@ Built-in tools:
 - send_message         : send a free-form message to your peer (for discussion before proposing)
 - ping_peer            : check if peer is alive
 - check_resources      : check available RAM and running instance count
-- restart_self         : (EMERGENCY) relaunch with current code
-- patch_own_file       : (EMERGENCY) manually patch this instance's emergence.py
-- restore_own_file     : (EMERGENCY) restore from .bak if patch broke something
-- authorize_patch      : (EMERGENCY) manually authorize peer to call patch_own_file
 - grep_peer_file       : verify peer's emergence.py independently
-- restore_peer_file    : (EMERGENCY) restore peer's file if peer is unreachable
 - shell                : run a shell command
 - read_file            : read a file's contents
 - write_file           : write to own tools/ or state/ only
 - list_dir             : list a directory
 - scan_network         : discover hosts on the local network
 
+⚠ Do NOT use in normal cycles (emergency recovery only):
+- restart_self         : relaunch with current code
+- patch_own_file       : manually patch this instance's emergence.py
+- restore_own_file     : restore from .bak if patch broke something
+- authorize_patch      : manually authorize peer to call patch_own_file
+- restore_peer_file    : restore peer's file if peer is unreachable
+
 IMPORTANT
-- You CANNOT use write_file on emergence.py — use patch_own_file for that.
+- You CANNOT use write_file on emergence.py — use propose_patch for that.
 - You CAN modify tools/ and state/ freely with write_file.
 - You can CREATE NEW tool scripts in tools/ using write_file — for example, a
   shell script that checks log health, monitors state drift, or summarises the
@@ -492,8 +447,6 @@ IMPORTANT
   emergence.py. New files in tools/ are immediately usable via the shell tool.
 - All communication is logged to /tmp/emergence_comm.log.
 - Two instances (I1 + I2) is the normal operating state. Do NOT spawn more.
-- Always use restart_self (not spawn) after a patch is verified.
-- TURN-TAKING: I2 patches first, I1 patches second. Never both at once.
 - Always call check_resources before any operation that starts a new process.
 """
 
@@ -675,9 +628,35 @@ def tool_list_dir(path: str = ".") -> str:
         return f"ERROR: {e}"
 
 
+_DEADLOCK_PHRASES = (
+    "apply the patch", "please apply", "apply it now",
+    "patch now", "apply now", "the patch now",
+)
+
+
 def tool_send_message(host: str, port: int, message: str) -> str:
     """Send a text message to another instance via HTTP."""
-    global _msg_seq
+    global _msg_seq, _outgoing_msg_buffer
+
+    # Deadlock detection: if the last 3 outgoing messages all contain
+    # "apply the patch" variants and no progress was made, block and redirect.
+    _outgoing_msg_buffer.append(message)
+    if len(_outgoing_msg_buffer) > 5:
+        _outgoing_msg_buffer.pop(0)
+    if len(_outgoing_msg_buffer) >= 3 and all(
+        any(p in m.lower() for p in _DEADLOCK_PHRASES)
+        for m in _outgoing_msg_buffer[-3:]
+    ):
+        _outgoing_msg_buffer.clear()  # reset so the error only fires once
+        return (
+            "ERROR: DEADLOCK DETECTED — You have sent variations of "
+            "\"apply the patch\" 3+ times with no progress. STOP messaging.\n\n"
+            "Your only options:\n"
+            "  1. Call propose_patch with specific old_text and new_text.\n"
+            f"  2. Call review_proposal if patch_proposal.json exists in {STATE_DIR}.\n"
+            "  3. Call file_outline path=emergence.py to find a new improvement target.\n\n"
+            "Do NOT send another \"apply the patch\" message."
+        )
 
     # If patch_own_file failed earlier in this same response, block outgoing
     # messages that make false success claims (the model pre-plans send_message
@@ -1214,9 +1193,8 @@ def tool_patch_own_file(old_text: str, new_text: str) -> str:
                 f"Call grep_file path=emergence.py pattern={new_text.split()[0]!r} "
                 f"to confirm the patch is present in YOUR file.",
                 f"Tell Instance {peer_num} you've restarted and the patch is confirmed.",
-                f"Then call authorize_patch to grant Instance {peer_num} permission "
-                f"to apply the same patch.",
-                f"Tell Instance {peer_num} to apply the patch now.",
+                f"Wait for Instance {peer_num}'s propose_patch call — respond with "
+                f"review_proposal(approved=true/false, explanation='...').",
                 f"After Instance {peer_num} restarts and confirms, YOU propose the "
                 f"next improvement cycle as PROPOSER.",
             ]
@@ -1373,6 +1351,21 @@ def tool_propose_patch(old_text: str, new_text: str, rationale: str) -> str:
             f"Check new_text carefully — it must be valid Python. "
             f"Do NOT include the '>>> ' display prefix in new_text."
         )
+
+    # Semantic smoke-test: exec the patched file to catch undefined top-level names.
+    # Function bodies are not executed (Python defers name resolution to call time),
+    # so this catches module-level NameErrors without running the full program.
+    try:
+        ns: dict = {}
+        exec(compile(patched_content, "emergence.py", "exec"), ns)
+    except NameError as e:
+        _propose_failures[clean_old] = _propose_failures.get(clean_old, 0) + 1
+        return (
+            f"ERROR: Patched code references undefined name: {e}. Check imports. "
+            f"(failure #{_propose_failures[clean_old]} for this old_text)."
+        )
+    except Exception:
+        pass  # ImportError, AttributeError, etc. are expected during static exec
 
     # Write proposal to peer's state dir
     proposal = {
@@ -2085,7 +2078,7 @@ def run_agentic_loop(llm: LocalLLM, max_iterations: int = MAX_ITERATIONS):
                     "role": "user",
                     "content": (
                         "⚠ INBOX EMPTY — Your peer has not yet contacted you.\n\n"
-                        "Do NOT call grep_file, patch_own_file, or send_message yet.\n"
+                        "Do NOT call grep_file or send_message yet.\n"
                         "Your ONLY action this iteration is to wait. No tool call is needed.\n"
                         "When your peer contacts you, a ⟦PEER MSG⟧ block will appear "
                         "in your next iteration — reply to that."
@@ -2120,8 +2113,7 @@ def run_agentic_loop(llm: LocalLLM, max_iterations: int = MAX_ITERATIONS):
                             "  'You just restarted with the updated code. Please verify "
                             "with grep_file that the change is present in your file, "
                             "then confirm you are running correctly.'\n\n"
-                            "Check YOUR restart_goal: if it says to call authorize_patch "
-                            "for your peer, do so now and tell them to apply the patch."
+                            "Check YOUR restart_goal for next steps and follow them."
                         ),
                     })
             else:
@@ -2217,33 +2209,6 @@ def run_agentic_loop(llm: LocalLLM, max_iterations: int = MAX_ITERATIONS):
                                     "Instance 2."
                                 ),
                             })
-
-        # ── AUTH FLAG ENFORCEMENT (both instances) ───────────────────────────
-        # If our peer has already written patch_authorized.flag to our state dir,
-        # the LLM MUST call patch_own_file this iteration — no more discussion.
-        auth_flag_path = STATE_DIR / "patch_authorized.flag"
-        if auth_flag_path.exists():
-            peer_num_ef = 3 - INSTANCE_NUM
-            flag_age = time.time() - auth_flag_path.stat().st_mtime
-            logging.info(
-                f"AUTH FLAG present in our state dir (age {flag_age:.0f}s) — "
-                "injecting patch execution reminder."
-            )
-            messages.append({
-                "role": "user",
-                "content": (
-                    f"⚠ EXECUTE PATCH NOW — Instance {peer_num_ef} has called "
-                    f"authorize_patch for you. The authorization flag is in your "
-                    f"state directory (age {flag_age:.0f}s).\n\n"
-                    f"Your ONLY action this iteration:\n"
-                    f"  1. Call patch_own_file with the agreed old_text and new_text.\n"
-                    f"  2. Call grep_file to verify the change.\n"
-                    f"  3. Tell Instance {peer_num_ef} you are restarting.\n"
-                    f"  4. Call restart_self.\n\n"
-                    f"Do NOT send more messages first. Do NOT discuss further. "
-                    f"Apply the patch now."
-                ),
-            })
 
         # ── PATCH PROPOSAL DETECTION (both instances) ────────────────────────────
         # If our peer wrote a patch_proposal.json to our state dir, inject a review prompt.
@@ -2500,15 +2465,13 @@ def run_agentic_loop(llm: LocalLLM, max_iterations: int = MAX_ITERATIONS):
                         "⚠ FALSE RESTART — Your message just said you are restarting, "
                         "but your response did NOT contain a restart_self tool call. "
                         "Saying you will restart is NOT restarting.\n\n"
-                        "Look at the grep_file results above. If the agreed new value is "
-                        "NOT shown in your file, you have NOT called patch_own_file yet.\n\n"
-                        "Your IMMEDIATE next response must contain ALL of these in order:\n"
-                        "  1. patch_own_file with the agreed old_text and new_text\n"
-                        "  2. grep_file to verify the change is in your file\n"
-                        "  3. send_message telling Instance 1 the result\n"
-                        "  4. restart_self\n\n"
-                        "Do NOT send a message claiming the patch is done until "
-                        "grep_file shows the new value. The order matters."
+                        "In the normal cycle, you do NOT call restart_self — Python "
+                        "restarts both instances automatically after propose_patch is "
+                        "approved. If you are in an emergency recovery scenario, use "
+                        "patch_own_file followed by restart_self.\n\n"
+                        "Your IMMEDIATE next action: call propose_patch with specific "
+                        "old_text and new_text to submit your improvement, or call "
+                        "review_proposal if a patch_proposal.json exists in your state dir."
                     ),
                 })
 
