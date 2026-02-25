@@ -1275,11 +1275,13 @@ def tool_restore_own_file() -> str:
     )
 
 
-# Protected constants — patching these breaks the system's identity/networking
+# Protected constants — patching these breaks the system's identity/networking/limits
 _PROTECTED_PATTERNS = [
     "INSTANCE_NUM =",
     "LISTEN_PORT =",
     "PEER_PORT =",
+    "MAX_ITERATIONS =",    # Category A — disabled; change would be meaningless across restarts
+    "MAX_TOOL_OUTPUT =",   # Category A — disabled; trivial constant tweak
 ]
 
 # Track repeated failures per old_text so we can inject a hard reset after 2 strikes.
@@ -1398,7 +1400,7 @@ def tool_propose_patch(old_text: str, new_text: str, rationale: str) -> str:
                 if proposal_file.exists():
                     proposal_file.unlink()
                 if resp.get("approved"):
-                    return _execute_approved_patch(clean_old, new_text, patched_content)
+                    return _execute_approved_patch(clean_old, clean_new, patched_content)
                 else:
                     explanation = resp.get("explanation", "No reason given.")
                     return (
@@ -1476,7 +1478,10 @@ def _execute_approved_patch(old_text: str, new_text: str, patched_content: str) 
     }
     (STATE_DIR / "restart_goal.json").write_text(json.dumps(own_goal, indent=2))
 
-    # Restart self — this replaces the process; no code runs after this
+    # Restart self — stagger by 90s so peer (canary) gets to load the model first.
+    # Both instances load a ~6GB model; simultaneous loads cause memory pressure.
+    logging.info("EXECUTE: Waiting 90s for peer to start loading before restarting self…")
+    time.sleep(90)
     logging.info("EXECUTE: Restarting self after successful patch.")
     tool_restart_self()
     return "Restarting..."  # unreachable
